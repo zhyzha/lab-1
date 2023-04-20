@@ -1,0 +1,181 @@
+---
+- name: Deploy EC2 Ubuntu instance
+  hosts: localhost
+  gather_facts: false
+
+  vars:
+    region: "us-east-1"
+    image: "ami-00826dc7e0af75de2" 
+    instance_type: "t2.micro"
+    security_group: "sg-04ace0487f61ee74e"
+    keypair: "awskey" 
+    count: 1
+    data_gid: 5000
+
+  tasks:
+    - name: Create EC2 instance
+      community.aws.ec2:
+        key_name: "{{ keypair }}"
+        region: "{{ region }}"
+        image_id: "{{ image }}"
+        instance_type: "{{ instance_type }}"
+        group_id: "{{ security_group }}"
+        count: "{{ count }}"
+        wait: yes
+      register: ec2
+      environment:
+        AWS_PROFILE: myprofile
+
+    - name: Add new instance to host group
+      add_host:
+        hostname: "{{ item.public_ip }}"
+        groups: ec2
+      with_items: "{{ ec2.instances }}"
+
+    - name: Wait for SSH to become available
+      wait_for:
+        host: "{{ item.public_ip }}"
+        port: 22
+        delay: 10
+        timeout: 120
+        state: started
+      with_items: "{{ ec2.instances }}"
+
+    - name: Print instance details
+      debug:
+        var: item.public_ip
+      with_items: "{{ ec2.instances }}"
+    - name: Create EBS Volume and Logical Volumes
+  hosts: ec2-instance
+  become: yes
+
+  vars:
+    volume_size: 1
+    lv_swap_size: 200
+    lv_xfs_size: 100
+
+  tasks:
+    # Create EBS volume
+    - name: Create EBS volume
+      community.aws.ec2_vol:
+        region: "{{ region }}"
+        volume_size: "{{ volume_size }}"
+        volume_type: gp2
+        state: present
+        delete_on_termination: true
+      register: ebs_vol
+
+    # Create physical volume
+    - name: Create physical volume
+      lvol:
+        vg: vg_devx
+        pv: "{{ ebs_vol.volume_id }}"
+        state: present
+
+    # Create logical volume for swap
+    - name: Create logical volume for swap
+      lvol:
+        vg: vg_devx
+        lv: lv_swap
+        size: "{{ lv_swap_size }}m"
+        state: present
+        fstype: swap
+
+    # Add swap to fstab
+    - name: Add swap to fstab
+      mount:
+        name: swap
+        src: UUID={{ hostvars['ec2-instance'].swap_uuid }}
+        fstype: swap
+        opts: defaults
+        state: present
+        dump: 0
+        passno: 0
+
+    # Create logical volume for xfs
+    - name: Create logical volume for xfs
+      lvol:
+        vg: vg_devx
+        lv: lv_xfs
+        size: "{{ lv_xfs_size }}m"
+        state: present
+        fstype: xfs
+
+    # Create mount point for xfs
+    - name: Create mount point for xfs
+      file:
+        path: /xfs
+        state: directory
+        mode: 0755
+
+    # Format xfs filesystem
+    - name: Format xfs filesystem
+      filesystem:
+        fstype: xfs
+        dev: /dev/mapper/vg_devx-lv_xfs
+
+    # Add xfs to fstab
+    - name: Add xfs to fstab
+      mount:
+        name: /xfs
+        src: UUID={{ hostvars['ec2-instance'].xfs_uuid }}
+        fstype: xfs
+        opts: defaults
+        state: present
+        dump: 0
+        passno: 2
+    
+    - name: Create data group
+      group:
+        name: data
+
+    - name: Create data group
+      group:
+        name: data
+        gid: "{{ data_gid }}"
+        state: present
+
+    - name: Create john user
+      user:
+        name: john
+        uid: 2000
+        group: data
+        password: "{{ '12345678' | password_hash('sha512') }}"
+        createhome: yes
+
+    - name: Create davis user
+      user:
+        name: davis
+        uid: 3000
+        group: data
+        password: "{{ '87654321' | password_hash('sha512') }}"
+        createhome: yes
+
+    - name: Create collaborative directory
+      file:
+       path: /xfs/data
+       state: directory
+       mode: "2770"
+       group: data
+      become: true
+
+    - name: Set group permissions on collaborative directory
+      acl:
+        path: /xfs/data
+        entity: data
+        etype: group
+        permissions: rwx
+        state: present
+        recursive: yes
+      become: true
+
+    - name: Set default group for files in collaborative directory
+      acl:
+        path: /xfs/data
+        entity: data
+        etype: group
+        default: yes
+        permissions: rwx
+        state: present
+        recursive: yes
+      become: true

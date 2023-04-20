@@ -1,0 +1,92 @@
+---
+- name: Deploy Apache and copy index.html to client EC2
+  hosts: all
+  become: yes
+  vars:
+    db_host: terraform-20230419092523217300000001.cxlzgennvsvn.us-east-1.rds.amazonaws.com
+    db_name: devx
+    db_user: admin
+    db_password: passw0rddd123
+    users:
+      - name: john
+        uid: 1001
+        gid: 1001
+        homedir: /home/john
+      - name: jane
+        uid: 1002
+        gid: 1002
+        homedir: /home/jane
+  tasks:
+    - name: Install Apache Webserver
+      apt:
+        name: apache2
+        state: present
+
+    - name: Create index.html file
+      copy:
+        content: "Hello from {{ ansible_host }}"
+        dest: /var/www/html/index.html
+        owner: www-data
+        group: www-data
+        mode: '0644'
+
+    - name: Open firewall for HTTP traffic
+      ufw:
+        rule: allow
+        port: 80
+
+    - name: Display IP address in browser
+      uri:
+        url: "http://{{ ansible_host }}"
+        return_content: yes
+
+- name: Add user information to devx database
+  hosts: all
+  become: true
+  vars:
+    db_host: terraform-20230419092523217300000001.cxlzgennvsvn.us-east-1.rds.amazonaws.com
+    db_name: devx
+    db_user: admin
+    db_password: passw0rddd123
+    users:
+      - name: zhyldyz
+        uid: 1001
+        gid: 1001
+        homedir: /home/john
+      - name: erzhan
+        uid: 1002
+        gid: 1002
+        homedir: /home/jane
+  tasks:
+    - name: Install MySQL client
+      apt:
+        name: mysql-client
+        state: present
+
+    - name: Install pip3
+      become: yes
+      become_user: root
+      apt:
+        name: python3-pip
+        state: present
+
+    - name: Install mysqlclient module
+      become: yes
+      become_user: root
+      pip:
+        name: mysqlclient
+
+    - name: Add user information to database
+      mysql_db:
+        login_user: "{{ db_user }}"
+        login_password: "{{ db_password }}"
+        login_host: "{{ db_host }}"
+        name: "{{ db_name }}"
+      loop: "{{ users }}"
+      loop_control:
+        loop_var: user
+      vars:
+        query: >
+          INSERT INTO users (username, uid, gid, homedir)
+          VALUES ('{{ user.name }}', {{ user.uid }}, {{ user.gid }}, '{{ user.homedir }}');"
+        state: present
